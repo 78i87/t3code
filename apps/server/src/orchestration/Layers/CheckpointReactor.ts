@@ -202,6 +202,7 @@ const make = Effect.gen(function* () {
     readonly status: "ready" | "missing" | "error";
     readonly assistantMessageId: MessageId | undefined;
     readonly createdAt: string;
+    readonly emitCapturedActivity?: boolean | undefined;
   }) {
     const fromTurnCount = Math.max(0, input.turnCount - 1);
     const fromCheckpointRef = checkpointRefForThreadTurn(input.threadId, fromTurnCount);
@@ -299,24 +300,26 @@ const make = Effect.gen(function* () {
       createdAt: input.createdAt,
     });
 
-    yield* orchestrationEngine.dispatch({
-      type: "thread.activity.append",
-      commandId: serverCommandId("checkpoint-captured-activity"),
-      threadId: input.threadId,
-      activity: {
-        id: EventId.makeUnsafe(crypto.randomUUID()),
-        tone: "info",
-        kind: "checkpoint.captured",
-        summary: "Checkpoint captured",
-        payload: {
-          turnCount: input.turnCount,
-          status: input.status,
+    if (input.emitCapturedActivity ?? true) {
+      yield* orchestrationEngine.dispatch({
+        type: "thread.activity.append",
+        commandId: serverCommandId("checkpoint-captured-activity"),
+        threadId: input.threadId,
+        activity: {
+          id: EventId.makeUnsafe(crypto.randomUUID()),
+          tone: "info",
+          kind: "checkpoint.captured",
+          summary: "Checkpoint captured",
+          payload: {
+            turnCount: input.turnCount,
+            status: input.status,
+          },
+          turnId: input.turnId,
+          createdAt: input.createdAt,
         },
-        turnId: input.turnId,
         createdAt: input.createdAt,
-      },
-      createdAt: input.createdAt,
-    });
+      });
+    }
   });
 
   // Captures a real git checkpoint when a turn completes via a runtime event.
@@ -339,14 +342,36 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    // Only skip if a real (non-placeholder) checkpoint already exists for this turn.
-    // ProviderRuntimeIngestion may insert placeholder entries with status "missing"
-    // before this reactor runs; those must not prevent real git capture.
-    if (
-      thread.checkpoints.some(
-        (checkpoint) => checkpoint.turnId === turnId && checkpoint.status !== "missing",
-      )
-    ) {
+    const existingNonMissing = thread.checkpoints.find(
+      (checkpoint) => checkpoint.turnId === turnId && checkpoint.status !== "missing",
+    );
+    // If a real checkpoint was already captured mid-turn (first turn.diff.updated),
+    // re-capture at turn completion only for successful turns so the diff
+    // includes all edits from that turn without changing non-success semantics.
+    if (existingNonMissing && event.payload.state === "completed") {
+      const checkpointCwdForRefresh = yield* resolveCheckpointCwd({
+        threadId: thread.id,
+        thread,
+        projects: readModel.projects,
+        preferSessionRuntime: true,
+      });
+      if (!checkpointCwdForRefresh) {
+        return;
+      }
+      yield* captureAndDispatchCheckpoint({
+        threadId: thread.id,
+        turnId,
+        thread,
+        cwd: checkpointCwdForRefresh,
+        turnCount: existingNonMissing.checkpointTurnCount,
+        status: checkpointStatusFromRuntime(event.payload.state),
+        assistantMessageId: existingNonMissing.assistantMessageId ?? undefined,
+        createdAt: event.createdAt,
+        emitCapturedActivity: false,
+      });
+      return;
+    }
+    if (existingNonMissing) {
       return;
     }
 
