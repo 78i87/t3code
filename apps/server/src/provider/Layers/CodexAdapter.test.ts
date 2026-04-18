@@ -28,10 +28,10 @@ import { CodexAdapter } from "../Services/CodexAdapter.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import { makeCodexAdapterLive } from "./CodexAdapter.ts";
 
-const asThreadId = (value: string): ThreadId => ThreadId.makeUnsafe(value);
-const asTurnId = (value: string): TurnId => TurnId.makeUnsafe(value);
-const asEventId = (value: string): EventId => EventId.makeUnsafe(value);
-const asItemId = (value: string): ProviderItemId => ProviderItemId.makeUnsafe(value);
+const asThreadId = (value: string): ThreadId => ThreadId.make(value);
+const asTurnId = (value: string): TurnId => TurnId.make(value);
+const asEventId = (value: string): EventId => EventId.make(value);
+const asItemId = (value: string): ProviderItemId => ProviderItemId.make(value);
 
 class FakeCodexManager extends CodexAppServerManager {
   public startSessionImpl = vi.fn(
@@ -144,8 +144,8 @@ const providerSessionDirectoryTestLayer = Layer.succeed(ProviderSessionDirectory
   getProvider: () =>
     Effect.die(new Error("ProviderSessionDirectory.getProvider is not used in test")),
   getBinding: () => Effect.succeed(Option.none()),
-  remove: () => Effect.void,
   listThreadIds: () => Effect.succeed([]),
+  listBindings: () => Effect.succeed([]),
 });
 
 const validationManager = new FakeCodexManager();
@@ -238,14 +238,7 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         .pipe(Effect.result);
 
       assert.equal(result._tag, "Failure");
-      if (result._tag !== "Failure") {
-        return;
-      }
-
       assert.equal(result.failure._tag, "ProviderAdapterSessionNotFoundError");
-      if (result.failure._tag !== "ProviderAdapterSessionNotFoundError") {
-        return;
-      }
       assert.equal(result.failure.provider, "codex");
       assert.equal(result.failure.threadId, "sess-missing");
       assert.equal(result.failure.cause instanceof Error, true);
@@ -474,6 +467,76 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("maps process stderr notifications to runtime.warning", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-process-stderr"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "process/stderr",
+        turnId: asTurnId("turn-1"),
+        message: "The filename or extension is too long. (os error 206)",
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "runtime.warning");
+      if (firstEvent.value.type !== "runtime.warning") {
+        return;
+      }
+      assert.equal(firstEvent.value.turnId, "turn-1");
+      assert.equal(
+        firstEvent.value.payload.message,
+        "The filename or extension is too long. (os error 206)",
+      );
+    }),
+  );
+
+  it.effect("maps fatal websocket stderr notifications to runtime.error", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-process-stderr-websocket"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "process/stderr",
+        turnId: asTurnId("turn-1"),
+        message:
+          "2026-03-31T18:14:06.833399Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 503 Service Unavailable, url: wss://chatgpt.com/backend-api/codex/responses",
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "runtime.error");
+      if (firstEvent.value.type !== "runtime.error") {
+        return;
+      }
+      assert.equal(firstEvent.value.turnId, "turn-1");
+      assert.equal(firstEvent.value.payload.class, "provider_error");
+      assert.equal(
+        firstEvent.value.payload.message,
+        "2026-03-31T18:14:06.833399Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 503 Service Unavailable, url: wss://chatgpt.com/backend-api/codex/responses",
+      );
+    }),
+  );
+
   it.effect("preserves request type when mapping serverRequest/resolved", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
@@ -486,7 +549,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         threadId: asThreadId("thread-1"),
         createdAt: new Date().toISOString(),
         method: "serverRequest/resolved",
-        requestId: ApprovalRequestId.makeUnsafe("req-1"),
+        requestId: ApprovalRequestId.make("req-1"),
         payload: {
           request: {
             method: "item/commandExecution/requestApproval",
@@ -522,7 +585,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         threadId: asThreadId("thread-1"),
         createdAt: new Date().toISOString(),
         method: "serverRequest/resolved",
-        requestId: ApprovalRequestId.makeUnsafe("req-file-read-1"),
+        requestId: ApprovalRequestId.make("req-file-read-1"),
         payload: {
           request: {
             method: "item/fileRead/requestApproval",
@@ -640,7 +703,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
           threadId: asThreadId("thread-1"),
           createdAt: new Date().toISOString(),
           method: "item/tool/requestUserInput",
-          requestId: ApprovalRequestId.makeUnsafe("req-user-input-1"),
+          requestId: ApprovalRequestId.make("req-user-input-1"),
           payload: {
             questions: [
               {
@@ -653,6 +716,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
                     description: "Allow workspace writes only",
                   },
                 ],
+                multiSelect: true,
               },
             ],
           },
@@ -664,7 +728,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
           threadId: asThreadId("thread-1"),
           createdAt: new Date().toISOString(),
           method: "item/tool/requestUserInput/answered",
-          requestId: ApprovalRequestId.makeUnsafe("req-user-input-1"),
+          requestId: ApprovalRequestId.make("req-user-input-1"),
           payload: {
             answers: {
               sandbox_mode: {
@@ -679,6 +743,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         if (events[0]?.type === "user-input.requested") {
           assert.equal(events[0].requestId, "req-user-input-1");
           assert.equal(events[0].payload.questions[0]?.id, "sandbox_mode");
+          assert.equal(events[0].payload.questions[0]?.multiSelect, true);
         }
 
         assert.equal(events[1]?.type, "user-input.resolved");

@@ -1,4 +1,10 @@
-import { DEFAULT_MODEL_BY_PROVIDER, ModelSelection, ThreadId } from "@t3tools/contracts";
+import {
+  DEFAULT_MODEL_BY_PROVIDER,
+  EnvironmentId,
+  ModelSelection,
+  ThreadId,
+} from "@t3tools/contracts";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
 import "../../index.css";
 
 import { page } from "vitest/browser";
@@ -9,35 +15,37 @@ import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
 import { TraitsMenuContent } from "./TraitsPicker";
 import { useComposerDraftStore } from "../../composerDraftStore";
 
+const LOCAL_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
+
 async function mountMenu(props?: { modelSelection?: ModelSelection; prompt?: string }) {
-  const threadId = ThreadId.makeUnsafe("thread-compact-menu");
+  const threadId = ThreadId.make("thread-compact-menu");
+  const threadRef = scopeThreadRef(LOCAL_ENVIRONMENT_ID, threadId);
+  const threadKey = scopedThreadKey(threadRef);
   const provider = props?.modelSelection?.provider ?? "claudeAgent";
-  const draftsByThreadId = {} as ReturnType<
-    typeof useComposerDraftStore.getState
-  >["draftsByThreadId"];
   const model = props?.modelSelection?.model ?? DEFAULT_MODEL_BY_PROVIDER[provider];
 
-  draftsByThreadId[threadId] = {
-    prompt: props?.prompt ?? "",
-    images: [],
-    nonPersistedImageIds: [],
-    persistedAttachments: [],
-    terminalContexts: [],
-    modelSelectionByProvider: {
-      [provider]: {
-        provider,
-        model,
-        ...(props?.modelSelection?.options ? { options: props.modelSelection.options } : {}),
+  useComposerDraftStore.setState({
+    draftsByThreadKey: {
+      [threadKey]: {
+        prompt: props?.prompt ?? "",
+        images: [],
+        nonPersistedImageIds: [],
+        persistedAttachments: [],
+        terminalContexts: [],
+        modelSelectionByProvider: {
+          [provider]: {
+            provider,
+            model,
+            ...(props?.modelSelection?.options ? { options: props.modelSelection.options } : {}),
+          },
+        },
+        activeProvider: provider,
+        runtimeMode: null,
+        interactionMode: null,
       },
     },
-    activeProvider: provider,
-    runtimeMode: null,
-    interactionMode: null,
-  };
-  useComposerDraftStore.setState({
-    draftsByThreadId,
-    draftThreadsByThreadId: {},
-    projectDraftThreadIdByProjectId: {},
+    draftThreadsByThreadKey: {},
+    logicalProjectDraftThreadKeyByLogicalProjectKey: {},
   });
   const host = document.createElement("div");
   document.body.append(host);
@@ -60,6 +68,7 @@ async function mountMenu(props?: { modelSelection?: ModelSelection; prompt?: str
               ],
               supportsFastMode: true,
               supportsThinkingToggle: false,
+              contextWindowOptions: [],
               promptInjectedEffortLevels: ["ultrathink"],
             },
           },
@@ -71,6 +80,7 @@ async function mountMenu(props?: { modelSelection?: ModelSelection; prompt?: str
               reasoningEffortLevels: [],
               supportsFastMode: false,
               supportsThinkingToggle: true,
+              contextWindowOptions: [],
               promptInjectedEffortLevels: [],
             },
           },
@@ -87,6 +97,7 @@ async function mountMenu(props?: { modelSelection?: ModelSelection; prompt?: str
               ],
               supportsFastMode: false,
               supportsThinkingToggle: false,
+              contextWindowOptions: [],
               promptInjectedEffortLevels: ["ultrathink"],
             },
           },
@@ -103,6 +114,7 @@ async function mountMenu(props?: { modelSelection?: ModelSelection; prompt?: str
               ],
               supportsFastMode: true,
               supportsThinkingToggle: false,
+              contextWindowOptions: [],
               promptInjectedEffortLevels: [],
             },
           },
@@ -111,13 +123,15 @@ async function mountMenu(props?: { modelSelection?: ModelSelection; prompt?: str
     <CompactComposerControlsMenu
       activePlan={false}
       interactionMode="default"
+      planSidebarLabel="Plan"
       planSidebarOpen={false}
       runtimeMode="approval-required"
+      showInteractionModeToggle
       traitsMenuContent={
         <TraitsMenuContent
           provider={provider}
           models={models}
-          threadId={threadId}
+          threadRef={threadRef}
           model={model}
           prompt={props?.prompt ?? ""}
           modelOptions={providerOptions}
@@ -126,7 +140,7 @@ async function mountMenu(props?: { modelSelection?: ModelSelection; prompt?: str
       }
       onToggleInteractionMode={vi.fn()}
       onTogglePlanSidebar={vi.fn()}
-      onToggleRuntimeMode={vi.fn()}
+      onRuntimeModeChange={vi.fn()}
     />,
     { container: host },
   );
@@ -146,9 +160,9 @@ describe("CompactComposerControlsMenu", () => {
   afterEach(() => {
     document.body.innerHTML = "";
     useComposerDraftStore.setState({
-      draftsByThreadId: {},
-      draftThreadsByThreadId: {},
-      projectDraftThreadIdByProjectId: {},
+      draftsByThreadKey: {},
+      draftThreadsByThreadKey: {},
+      logicalProjectDraftThreadKeyByLogicalProjectKey: {},
       stickyModelSelectionByProvider: {},
     });
   });
@@ -216,7 +230,7 @@ describe("CompactComposerControlsMenu", () => {
     });
   });
 
-  it("shows prompt-controlled Ultrathink messaging with disabled effort controls", async () => {
+  it("shows prompt-controlled Ultrathink state with selectable effort controls", async () => {
     await using _ = await mountMenu({
       modelSelection: {
         provider: "claudeAgent",
@@ -231,8 +245,61 @@ describe("CompactComposerControlsMenu", () => {
     await vi.waitFor(() => {
       const text = document.body.textContent ?? "";
       expect(text).toContain("Effort");
-      expect(text).toContain("Remove Ultrathink from the prompt to change effort.");
-      expect(text).not.toContain("Fallback Effort");
+      expect(text).not.toContain("ultrathink");
     });
+  });
+
+  it("warns when ultrathink appears in prompt body text", async () => {
+    await using _ = await mountMenu({
+      modelSelection: {
+        provider: "claudeAgent",
+        model: "claude-opus-4-6",
+        options: { effort: "high" },
+      },
+      prompt: "Ultrathink:\nplease ultrathink about this problem",
+    });
+
+    await page.getByLabelText("More composer controls").click();
+
+    await vi.waitFor(() => {
+      const text = document.body.textContent ?? "";
+      expect(text).toContain(
+        'Your prompt contains "ultrathink" in the text. Remove it to change effort.',
+      );
+    });
+  });
+
+  it("can hide the interaction mode section", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <CompactComposerControlsMenu
+        activePlan={false}
+        interactionMode="default"
+        planSidebarLabel="Plan"
+        planSidebarOpen={false}
+        runtimeMode="approval-required"
+        showInteractionModeToggle={false}
+        onToggleInteractionMode={vi.fn()}
+        onTogglePlanSidebar={vi.fn()}
+        onRuntimeModeChange={vi.fn()}
+      />,
+      { container: host },
+    );
+
+    await page.getByLabelText("More composer controls").click();
+
+    await vi.waitFor(() => {
+      const text = document.body.textContent ?? "";
+      expect(text).not.toContain("Mode");
+      expect(text).not.toContain("Chat");
+      expect(text).not.toContain("Plan");
+      expect(text).toContain("Access");
+      expect(text).toContain("Supervised");
+      expect(text).toContain("Full access");
+    });
+
+    await screen.unmount();
+    host.remove();
   });
 });

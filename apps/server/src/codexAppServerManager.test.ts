@@ -15,9 +15,9 @@ import {
   normalizeCodexModelSlug,
   readCodexAccountSnapshot,
   resolveCodexModelForAccount,
-} from "./codexAppServerManager";
+} from "./codexAppServerManager.ts";
 
-const asThreadId = (value: string): ThreadId => ThreadId.makeUnsafe(value);
+const asThreadId = (value: string): ThreadId => ThreadId.make(value);
 
 function createSendTurnHarness() {
   const manager = new CodexAppServerManager();
@@ -111,9 +111,9 @@ function createPendingUserInputHarness() {
     },
     pendingUserInputs: new Map([
       [
-        ApprovalRequestId.makeUnsafe("req-user-input-1"),
+        ApprovalRequestId.make("req-user-input-1"),
         {
-          requestId: ApprovalRequestId.makeUnsafe("req-user-input-1"),
+          requestId: ApprovalRequestId.make("req-user-input-1"),
           jsonRpcId: 42,
           threadId: asThreadId("thread_1"),
         },
@@ -207,6 +207,42 @@ describe("classifyCodexStderrLine", () => {
   });
 });
 
+describe("process stderr events", () => {
+  it("emits classified stderr lines as notifications", () => {
+    const manager = new CodexAppServerManager();
+    const emitEvent = vi
+      .spyOn(manager as unknown as { emitEvent: (...args: unknown[]) => void }, "emitEvent")
+      .mockImplementation(() => {});
+
+    (
+      manager as unknown as {
+        emitNotificationEvent: (
+          context: { session: { threadId: ThreadId } },
+          method: string,
+          message: string,
+        ) => void;
+      }
+    ).emitNotificationEvent(
+      {
+        session: {
+          threadId: asThreadId("thread-1"),
+        },
+      },
+      "process/stderr",
+      "fatal: permission denied",
+    );
+
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "notification",
+        method: "process/stderr",
+        threadId: "thread-1",
+        message: "fatal: permission denied",
+      }),
+    );
+  });
+});
+
 describe("normalizeCodexModelSlug", () => {
   it("maps 5.3 aliases to gpt-5.3-codex", () => {
     expect(normalizeCodexModelSlug("5.3")).toBe("gpt-5.3-codex");
@@ -274,7 +310,7 @@ describe("readCodexAccountSnapshot", () => {
     });
   });
 
-  it("keeps spark enabled for api key accounts", () => {
+  it("disables spark for api key accounts", () => {
     expect(
       readCodexAccountSnapshot({
         type: "apiKey",
@@ -282,7 +318,20 @@ describe("readCodexAccountSnapshot", () => {
     ).toEqual({
       type: "apiKey",
       planType: null,
-      sparkEnabled: true,
+      sparkEnabled: false,
+    });
+  });
+
+  it("disables spark for unknown chatgpt plans", () => {
+    expect(
+      readCodexAccountSnapshot({
+        type: "chatgpt",
+        email: "unknown@example.com",
+      }),
+    ).toEqual({
+      type: "chatgpt",
+      planType: "unknown",
+      sparkEnabled: false,
     });
   });
 });
@@ -306,6 +355,16 @@ describe("resolveCodexModelForAccount", () => {
         sparkEnabled: true,
       }),
     ).toBe("gpt-5.3-codex-spark");
+  });
+
+  it("falls back from spark to default for api key auth", () => {
+    expect(
+      resolveCodexModelForAccount("gpt-5.3-codex-spark", {
+        type: "apiKey",
+        planType: null,
+        sparkEnabled: false,
+      }),
+    ).toBe("gpt-5.3-codex");
   });
 });
 
@@ -408,6 +467,154 @@ describe("startSession", () => {
       ]);
     } finally {
       versionCheck.mockRestore();
+      manager.stopAll();
+    }
+  });
+
+  it("disposes an existing session before starting a replacement for the same thread", async () => {
+    const manager = new CodexAppServerManager();
+    const existingContext = {
+      session: {
+        provider: "codex",
+        status: "ready",
+        threadId: asThreadId("thread-1"),
+        runtimeMode: "full-access",
+        createdAt: "2026-02-10T00:00:00.000Z",
+        updatedAt: "2026-02-10T00:00:00.000Z",
+      },
+    };
+
+    (
+      manager as unknown as {
+        sessions: Map<ThreadId, typeof existingContext>;
+      }
+    ).sessions.set(asThreadId("thread-1"), existingContext);
+
+    const disposeSession = vi
+      .spyOn(
+        manager as unknown as {
+          disposeSession: (
+            context: typeof existingContext,
+            options?: { readonly emitLifecycleEvent?: boolean },
+          ) => void;
+        },
+        "disposeSession",
+      )
+      .mockImplementation(() => {});
+    const assertSupportedCodexCliVersion = vi
+      .spyOn(
+        manager as unknown as {
+          assertSupportedCodexCliVersion: (input: {
+            binaryPath: string;
+            cwd: string;
+            homePath?: string;
+          }) => void;
+        },
+        "assertSupportedCodexCliVersion",
+      )
+      .mockImplementation(() => {});
+    const processCwd = vi.spyOn(process, "cwd").mockImplementation(() => {
+      throw new Error("cwd missing");
+    });
+
+    try {
+      await expect(
+        manager.startSession({
+          threadId: asThreadId("thread-1"),
+          provider: "codex",
+          binaryPath: "codex",
+          runtimeMode: "full-access",
+        }),
+      ).rejects.toThrow("cwd missing");
+
+      expect(disposeSession).toHaveBeenCalledWith(existingContext, {
+        emitLifecycleEvent: false,
+      });
+      expect(assertSupportedCodexCliVersion).not.toHaveBeenCalled();
+    } finally {
+      disposeSession.mockRestore();
+      assertSupportedCodexCliVersion.mockRestore();
+      processCwd.mockRestore();
+      (
+        manager as unknown as {
+          sessions: Map<ThreadId, typeof existingContext>;
+        }
+      ).sessions.clear();
+      manager.stopAll();
+    }
+  });
+
+  it("continues replacement start when existing session disposal fails", async () => {
+    const manager = new CodexAppServerManager();
+    const existingContext = {
+      session: {
+        provider: "codex",
+        status: "ready",
+        threadId: asThreadId("thread-1"),
+        runtimeMode: "full-access",
+        createdAt: "2026-02-10T00:00:00.000Z",
+        updatedAt: "2026-02-10T00:00:00.000Z",
+      },
+    };
+
+    (
+      manager as unknown as {
+        sessions: Map<ThreadId, typeof existingContext>;
+      }
+    ).sessions.set(asThreadId("thread-1"), existingContext);
+
+    const disposeSession = vi
+      .spyOn(
+        manager as unknown as {
+          disposeSession: (
+            context: typeof existingContext,
+            options?: { readonly emitLifecycleEvent?: boolean },
+          ) => void;
+        },
+        "disposeSession",
+      )
+      .mockImplementation(() => {
+        throw new Error("dispose failed");
+      });
+    const assertSupportedCodexCliVersion = vi
+      .spyOn(
+        manager as unknown as {
+          assertSupportedCodexCliVersion: (input: {
+            binaryPath: string;
+            cwd: string;
+            homePath?: string;
+          }) => void;
+        },
+        "assertSupportedCodexCliVersion",
+      )
+      .mockImplementation(() => {});
+    const processCwd = vi.spyOn(process, "cwd").mockImplementation(() => {
+      throw new Error("cwd missing");
+    });
+
+    try {
+      await expect(
+        manager.startSession({
+          threadId: asThreadId("thread-1"),
+          provider: "codex",
+          binaryPath: "codex",
+          runtimeMode: "full-access",
+        }),
+      ).rejects.toThrow("cwd missing");
+
+      expect(disposeSession).toHaveBeenCalledWith(existingContext, {
+        emitLifecycleEvent: false,
+      });
+      expect(assertSupportedCodexCliVersion).not.toHaveBeenCalled();
+    } finally {
+      disposeSession.mockRestore();
+      assertSupportedCodexCliVersion.mockRestore();
+      processCwd.mockRestore();
+      (
+        manager as unknown as {
+          sessions: Map<ThreadId, typeof existingContext>;
+        }
+      ).sessions.clear();
       manager.stopAll();
     }
   });
@@ -684,7 +891,7 @@ describe("respondToUserInput", () => {
 
     await manager.respondToUserInput(
       asThreadId("thread_1"),
-      ApprovalRequestId.makeUnsafe("req-user-input-1"),
+      ApprovalRequestId.make("req-user-input-1"),
       {
         scope: "All request methods",
         compat: "Keep current envelope",
@@ -721,7 +928,7 @@ describe("respondToUserInput", () => {
 
     await manager.respondToUserInput(
       asThreadId("thread_1"),
-      ApprovalRequestId.makeUnsafe("req-user-input-1"),
+      ApprovalRequestId.make("req-user-input-1"),
       {
         scope: [],
       },

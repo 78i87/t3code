@@ -1,16 +1,15 @@
 import {
   DEFAULT_MODEL_BY_PROVIDER,
-  type ClaudeModelOptions,
-  type CodexModelOptions,
+  type CursorModelOptions,
   type ModelCapabilities,
   type ProviderKind,
   type ServerProvider,
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import {
-  getDefaultEffort,
   hasEffortLevel,
   normalizeModelSlug,
+  resolveContextWindow,
   trimOrNull,
 } from "@t3tools/shared/model";
 
@@ -18,6 +17,7 @@ const EMPTY_CAPABILITIES: ModelCapabilities = {
   reasoningEffortLevels: [],
   supportsFastMode: false,
   supportsThinkingToggle: false,
+  contextWindowOptions: [],
   promptInjectedEffortLevels: [],
 };
 
@@ -39,7 +39,10 @@ export function isProviderEnabled(
   providers: ReadonlyArray<ServerProvider>,
   provider: ProviderKind,
 ): boolean {
-  return getProviderSnapshot(providers, provider)?.enabled ?? true;
+  if (providers.length === 0) {
+    return true;
+  }
+  return getProviderSnapshot(providers, provider)?.enabled ?? false;
 }
 
 export function resolveSelectableProvider(
@@ -74,43 +77,29 @@ export function getDefaultServerModel(
   );
 }
 
-export function normalizeCodexModelOptionsWithCapabilities(
+export function normalizeCursorModelOptionsWithCapabilities(
   caps: ModelCapabilities,
-  modelOptions: CodexModelOptions | null | undefined,
-): CodexModelOptions | undefined {
-  const defaultReasoningEffort = getDefaultEffort(caps);
-  const reasoningEffort = trimOrNull(modelOptions?.reasoningEffort) ?? defaultReasoningEffort;
-  const fastModeEnabled = modelOptions?.fastMode === true;
-  const nextOptions: CodexModelOptions = {
-    ...(reasoningEffort && reasoningEffort !== defaultReasoningEffort
-      ? { reasoningEffort: reasoningEffort as CodexModelOptions["reasoningEffort"] }
-      : {}),
-    ...(fastModeEnabled ? { fastMode: true } : {}),
-  };
-  return Object.keys(nextOptions).length > 0 ? nextOptions : undefined;
-}
-
-export function normalizeClaudeModelOptionsWithCapabilities(
-  caps: ModelCapabilities,
-  modelOptions: ClaudeModelOptions | null | undefined,
-): ClaudeModelOptions | undefined {
-  const defaultReasoningEffort = getDefaultEffort(caps);
-  const resolvedEffort = trimOrNull(modelOptions?.effort);
-  const isPromptInjected = caps.promptInjectedEffortLevels.includes(resolvedEffort ?? "");
-  const effort =
-    resolvedEffort &&
-    !isPromptInjected &&
-    hasEffortLevel(caps, resolvedEffort) &&
-    resolvedEffort !== defaultReasoningEffort
-      ? resolvedEffort
+  modelOptions: CursorModelOptions | null | undefined,
+): CursorModelOptions | undefined {
+  const reasoning = trimOrNull(modelOptions?.reasoning);
+  const reasoningValue =
+    reasoning && hasEffortLevel(caps, reasoning)
+      ? (reasoning as CursorModelOptions["reasoning"])
+      : undefined;
+  const fastMode =
+    caps.supportsFastMode && typeof modelOptions?.fastMode === "boolean"
+      ? modelOptions.fastMode
       : undefined;
   const thinking =
-    caps.supportsThinkingToggle && modelOptions?.thinking === false ? false : undefined;
-  const fastMode = caps.supportsFastMode && modelOptions?.fastMode === true ? true : undefined;
-  const nextOptions: ClaudeModelOptions = {
-    ...(thinking === false ? { thinking: false } : {}),
-    ...(effort ? { effort } : {}),
-    ...(fastMode ? { fastMode: true } : {}),
+    caps.supportsThinkingToggle && typeof modelOptions?.thinking === "boolean"
+      ? modelOptions.thinking
+      : undefined;
+  const contextWindow = resolveContextWindow(caps, modelOptions?.contextWindow);
+  const nextOptions: CursorModelOptions = {
+    ...(reasoningValue ? { reasoning: reasoningValue } : {}),
+    ...(fastMode !== undefined ? { fastMode } : {}),
+    ...(thinking !== undefined ? { thinking } : {}),
+    ...(contextWindow ? { contextWindow } : {}),
   };
   return Object.keys(nextOptions).length > 0 ? nextOptions : undefined;
 }

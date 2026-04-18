@@ -1,11 +1,14 @@
 import {
+  type EnvironmentId,
   type EditorId,
   type ProjectScript,
   type ResolvedKeybindingsConfig,
   type ThreadId,
 } from "@t3tools/contracts";
+import { scopeThreadRef } from "@t3tools/client-runtime";
 import { memo } from "react";
 import GitActionsControl from "../GitActionsControl";
+import { type DraftId } from "~/composerDraftStore";
 import { DiffIcon, TerminalSquareIcon } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -15,7 +18,9 @@ import { SidebarTrigger } from "../ui/sidebar";
 import { OpenInPicker } from "./OpenInPicker";
 
 interface ChatHeaderProps {
+  activeThreadEnvironmentId: EnvironmentId;
   activeThreadId: ThreadId;
+  draftId?: DraftId;
   activeThreadTitle: string;
   activeProjectName: string | undefined;
   isGitRepo: boolean;
@@ -39,7 +44,9 @@ interface ChatHeaderProps {
 }
 
 export const ChatHeader = memo(function ChatHeader({
+  activeThreadEnvironmentId,
   activeThreadId,
+  draftId,
   activeThreadTitle,
   activeProjectName,
   isGitRepo,
@@ -62,7 +69,7 @@ export const ChatHeader = memo(function ChatHeader({
   onToggleDiff,
 }: ChatHeaderProps) {
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-2">
+    <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2">
       <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
         <SidebarTrigger className="size-7 shrink-0 md:hidden" />
         <h2
@@ -72,8 +79,8 @@ export const ChatHeader = memo(function ChatHeader({
           {activeThreadTitle}
         </h2>
         {activeProjectName && (
-          <Badge variant="outline" className="min-w-0 shrink truncate">
-            {activeProjectName}
+          <Badge variant="outline" className="min-w-0 shrink overflow-hidden">
+            <span className="min-w-0 truncate">{activeProjectName}</span>
           </Badge>
         )}
         {activeProjectName && !isGitRepo && (
@@ -82,7 +89,7 @@ export const ChatHeader = memo(function ChatHeader({
           </Badge>
         )}
       </div>
-      <div className="@container/header-actions flex min-w-0 flex-1 items-center justify-end gap-2 @sm/header-actions:gap-3">
+      <div className="flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3">
         {activeProjectScripts && (
           <ProjectScriptsControl
             scripts={activeProjectScripts}
@@ -101,7 +108,13 @@ export const ChatHeader = memo(function ChatHeader({
             openInCwd={openInCwd}
           />
         )}
-        {activeProjectName && <GitActionsControl gitCwd={gitCwd} activeThreadId={activeThreadId} />}
+        {activeProjectName && (
+          <GitActionsControl
+            gitCwd={gitCwd}
+            activeThreadRef={scopeThreadRef(activeThreadEnvironmentId, activeThreadId)}
+            {...(draftId ? { draftId } : {})}
+          />
+        )}
         <Tooltip>
           <TooltipTrigger
             render={

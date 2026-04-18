@@ -1,4 +1,4 @@
-import { type ModelSlug, type ProviderKind, type ServerProvider } from "@t3tools/contracts";
+import { type ProviderKind, type ServerProvider } from "@t3tools/contracts";
 import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
@@ -22,8 +22,10 @@ const TEST_PROVIDERS: ReadonlyArray<ServerProvider> = [
     installed: true,
     version: "0.116.0",
     status: "ready",
-    authStatus: "authenticated",
+    auth: { status: "authenticated" },
     checkedAt: new Date().toISOString(),
+    slashCommands: [],
+    skills: [],
     models: [
       {
         slug: "gpt-5-codex",
@@ -33,6 +35,7 @@ const TEST_PROVIDERS: ReadonlyArray<ServerProvider> = [
           reasoningEffortLevels: [effort("low"), effort("medium", true), effort("high")],
           supportsFastMode: true,
           supportsThinkingToggle: false,
+          contextWindowOptions: [],
           promptInjectedEffortLevels: [],
         },
       },
@@ -44,6 +47,7 @@ const TEST_PROVIDERS: ReadonlyArray<ServerProvider> = [
           reasoningEffortLevels: [effort("low"), effort("medium", true), effort("high")],
           supportsFastMode: true,
           supportsThinkingToggle: false,
+          contextWindowOptions: [],
           promptInjectedEffortLevels: [],
         },
       },
@@ -55,8 +59,10 @@ const TEST_PROVIDERS: ReadonlyArray<ServerProvider> = [
     installed: true,
     version: "1.0.0",
     status: "ready",
-    authStatus: "authenticated",
+    auth: { status: "authenticated" },
     checkedAt: new Date().toISOString(),
+    slashCommands: [],
+    skills: [],
     models: [
       {
         slug: "claude-opus-4-6",
@@ -71,6 +77,7 @@ const TEST_PROVIDERS: ReadonlyArray<ServerProvider> = [
           ],
           supportsFastMode: false,
           supportsThinkingToggle: true,
+          contextWindowOptions: [],
           promptInjectedEffortLevels: [],
         },
       },
@@ -87,6 +94,7 @@ const TEST_PROVIDERS: ReadonlyArray<ServerProvider> = [
           ],
           supportsFastMode: false,
           supportsThinkingToggle: true,
+          contextWindowOptions: [],
           promptInjectedEffortLevels: [],
         },
       },
@@ -98,6 +106,7 @@ const TEST_PROVIDERS: ReadonlyArray<ServerProvider> = [
           reasoningEffortLevels: [effort("low"), effort("medium", true), effort("high")],
           supportsFastMode: false,
           supportsThinkingToggle: true,
+          contextWindowOptions: [],
           promptInjectedEffortLevels: [],
         },
       },
@@ -105,9 +114,24 @@ const TEST_PROVIDERS: ReadonlyArray<ServerProvider> = [
   },
 ];
 
+function buildCodexProvider(models: ServerProvider["models"]): ServerProvider {
+  return {
+    provider: "codex",
+    enabled: true,
+    installed: true,
+    version: "0.116.0",
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: new Date().toISOString(),
+    models,
+    slashCommands: [],
+    skills: [],
+  };
+}
+
 async function mountPicker(props: {
   provider: ProviderKind;
-  model: ModelSlug;
+  model: string;
   lockedProvider: ProviderKind | null;
   providers?: ReadonlyArray<ServerProvider>;
   triggerVariant?: "ghost" | "outline";
@@ -233,6 +257,93 @@ describe("ProviderModelPicker", () => {
       });
     } finally {
       await mounted.cleanup();
+    }
+  });
+
+  it("only shows codex spark when the server reports it for the account", async () => {
+    const providersWithoutSpark: ReadonlyArray<ServerProvider> = [
+      buildCodexProvider([
+        {
+          slug: "gpt-5.3-codex",
+          name: "GPT-5.3 Codex",
+          isCustom: false,
+          capabilities: {
+            reasoningEffortLevels: [effort("low"), effort("medium", true), effort("high")],
+            supportsFastMode: true,
+            supportsThinkingToggle: false,
+            contextWindowOptions: [],
+            promptInjectedEffortLevels: [],
+          },
+        },
+      ]),
+      TEST_PROVIDERS[1]!,
+    ];
+    const providersWithSpark: ReadonlyArray<ServerProvider> = [
+      buildCodexProvider([
+        {
+          slug: "gpt-5.3-codex",
+          name: "GPT-5.3 Codex",
+          isCustom: false,
+          capabilities: {
+            reasoningEffortLevels: [effort("low"), effort("medium", true), effort("high")],
+            supportsFastMode: true,
+            supportsThinkingToggle: false,
+            contextWindowOptions: [],
+            promptInjectedEffortLevels: [],
+          },
+        },
+        {
+          slug: "gpt-5.3-codex-spark",
+          name: "GPT-5.3 Codex Spark",
+          isCustom: false,
+          capabilities: {
+            reasoningEffortLevels: [effort("low"), effort("medium", true), effort("high")],
+            supportsFastMode: true,
+            supportsThinkingToggle: false,
+            contextWindowOptions: [],
+            promptInjectedEffortLevels: [],
+          },
+        },
+      ]),
+      TEST_PROVIDERS[1]!,
+    ];
+
+    const hidden = await mountPicker({
+      provider: "claudeAgent",
+      model: "claude-opus-4-6",
+      lockedProvider: null,
+      providers: providersWithoutSpark,
+    });
+
+    try {
+      await page.getByRole("button").click();
+      await page.getByRole("menuitem", { name: "Codex" }).hover();
+
+      await vi.waitFor(() => {
+        const text = document.body.textContent ?? "";
+        expect(text).toContain("GPT-5.3 Codex");
+        expect(text).not.toContain("GPT-5.3 Codex Spark");
+      });
+    } finally {
+      await hidden.cleanup();
+    }
+
+    const visible = await mountPicker({
+      provider: "claudeAgent",
+      model: "claude-opus-4-6",
+      lockedProvider: null,
+      providers: providersWithSpark,
+    });
+
+    try {
+      await page.getByRole("button").click();
+      await page.getByRole("menuitem", { name: "Codex" }).hover();
+
+      await vi.waitFor(() => {
+        expect(document.body.textContent ?? "").toContain("GPT-5.3 Codex Spark");
+      });
+    } finally {
+      await visible.cleanup();
     }
   });
 
